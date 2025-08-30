@@ -1,0 +1,9 @@
+Model,Split,MAE,RMSE,MAPE%
+Naive-1h,val,46.703,60.311,3.757
+Naive-1h,test,38.939,50.345,3.265
+Naive-24h,val,79.018,117.297,6.249
+Naive-24h,test,69.976,106.787,5.801
+LinearRegression,val,28.025,36.513,2.271
+LinearRegression,test,30.422,38.034,2.621
+HistGB,val,16.119,22.344,1.292
+HistGB,test,20.165,27.222,1.731
