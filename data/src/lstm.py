@@ -220,7 +220,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", required=True, help="Path to cleaned_electricity_demand.csv")
+    parser.add_argument("--data", required=True, help="Path to all_datasets_compressed.npz.zip")
     parser.add_argument("--outdir", default="outputs/seq", help="Directory to save models & metrics")
     parser.add_argument("--model", choices=["lstm", "gru"], default="lstm")
     parser.add_argument("--horizon", type=int, default=1, help="Prediction horizon in hours (1 or 24 typical)")
