@@ -1,32 +1,4 @@
-# Phase 3 — Sequence Models (TCN + Transformer)
-# Notebook-style Python script (use in Colab / Jupyter)
-# Save as: notebooks/phase3_sequence_models.ipynb
 
-"""
-Overview
---------
-This notebook trains and tunes a TCN and a Transformer to predict the next 24 hours of
-`nat_demand` using past sequence data (default lookback 168 hours).
-
-How to run
-----------
-1. Open in Colab or Jupyter.
-2. Upload `cleaned_electricity_demand.csv` to the notebook working directory (Colab: left Files panel -> upload).
-3. Run cells in order.
-
-Notes
------
-- Framework: TensorFlow / Keras
-- Outputs saved to `phase3_outputs/`
-- If running in Colab you may need to `!pip install -q tensorflow` if not present.
-
-"""
-
-# %%
-# Install (uncomment if needed in Colab)
-# !pip install -q tensorflow
-
-# %%
 import os
 import json
 import numpy as np
@@ -317,4 +289,4 @@ print('\nPhase 3 sequence experiments finished.\n')
 print('Check folder:', OUTDIR, 'for saved models and phase3_sequence_results.json')
 
 """
-# End of notebook content
+
