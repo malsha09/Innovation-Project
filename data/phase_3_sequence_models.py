@@ -16,7 +16,7 @@ tf.random.set_seed(1337)
 
 # %%
 # ---------- CONFIG ----------
-CSV_PATH = 'all_datasets.npz.zip'  # upload this file in Colab or put in repo
+CSV_PATH = 'all_datasets_compressed.npz.zip'  # upload this file in Colab or put in repo
 TARGET = 'nat_demand'
 TIME = 'datetime'
 
