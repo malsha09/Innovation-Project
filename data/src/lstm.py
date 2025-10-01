@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import zipfile
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -15,7 +16,6 @@ RANDOM_STATE = 42
 
 
 def set_seed(seed: int = RANDOM_STATE):
-    # TF 2.15+
     tf.keras.utils.set_random_seed(seed)
 
 
@@ -31,11 +31,9 @@ def rmse(y_true, y_pred):
 
 
 def detect_datetime_col(df: pd.DataFrame):
-    # Prefer common names
     candidates = [c for c in df.columns if c.lower() in {"datetime", "timestamp", "date", "time"}]
     if candidates:
         return candidates[0]
-    # Try to infer by dtype
     for c in df.columns:
         if np.issubdtype(df[c].dtype, np.datetime64):
             return c
@@ -43,7 +41,6 @@ def detect_datetime_col(df: pd.DataFrame):
 
 
 def add_calendar_features(df: pd.DataFrame, dt_col: str):
-    # Minimal calendar features; no holidays assumed
     dt = pd.to_datetime(df[dt_col])
     df["hour"] = dt.dt.hour
     df["dayofweek"] = dt.dt.dayofweek
@@ -53,15 +50,7 @@ def add_calendar_features(df: pd.DataFrame, dt_col: str):
 
 
 def make_windows(feature_frame: pd.DataFrame, target_series: pd.Series, lookback: int, horizon: int):
-    """
-    feature_frame: scaled features (NO target column inside)
-    target_series: unscaled target (nat_demand)
-    Returns X, y shaped:
-      X: (N, lookback, F)
-      y: (N, horizon)  (horizon=1 -> shape (N,1))
-    """
     X, y = [], []
-    # Use numeric index for speed; assumes both are aligned and equally long
     for i in range(lookback, len(feature_frame) - horizon + 1):
         X.append(feature_frame.iloc[i - lookback:i].values)
         y.append(target_series.iloc[i:i + horizon].values)
@@ -89,6 +78,31 @@ def build_model(kind: str, lookback: int, n_features: int, horizon: int,
     return model
 
 
+def load_dataset(path: str) -> pd.DataFrame:
+    """Load dataset from CSV, NPZ, or NPZ.ZIP."""
+    path = Path(path)
+
+    if path.suffix == ".csv":
+        return pd.read_csv(path)
+
+    if path.suffix == ".npz":
+        npz = np.load(path)
+        return pd.DataFrame({k: npz[k] for k in npz.files})
+
+    if path.suffix == ".zip":
+        # Assume it contains a single .npz file
+        with zipfile.ZipFile(path, "r") as z:
+            npz_files = [f for f in z.namelist() if f.endswith(".npz")]
+            if not npz_files:
+                raise ValueError("No .npz file found inside zip archive")
+            extract_path = path.parent / npz_files[0]
+            z.extract(npz_files[0], path.parent)
+            npz = np.load(extract_path)
+            return pd.DataFrame({k: npz[k] for k in npz.files})
+
+    raise ValueError(f"Unsupported file format: {path}")
+
+
 def main(args):
     set_seed(RANDOM_STATE)
 
@@ -96,36 +110,31 @@ def main(args):
     outdir.mkdir(parents=True, exist_ok=True)
 
     # ---- Load & sort data
-    df = pd.read_csv(args.data)
+    df = load_dataset(args.data)
     dt_col = detect_datetime_col(df)
     if dt_col is not None:
         df[dt_col] = pd.to_datetime(df[dt_col])
         df.sort_values(dt_col, inplace=True)
         df.set_index(dt_col, inplace=True)
     else:
-        # No datetime column — keep current order but warn in logs
         print("[WARN] No datetime/timestamp column detected. Using current row order.")
 
     if TARGET not in df.columns:
         raise ValueError(f"Expected target column '{TARGET}' not found. Columns: {list(df.columns)}")
 
-    # ---- Optional calendar features (safe: derived from timestamps only)
+    # ---- Optional calendar features
     if args.add_calendar:
         if dt_col is None:
             print("[WARN] --add-calendar requested but no datetime column found; skipping calendar features.")
         else:
             df = add_calendar_features(df.reset_index(), dt_col="index").set_index("index")
 
-    # ---- Build feature set
-    # Start with all non-target columns as candidate features
+    # ---- Features
     base_feature_cols = [c for c in df.columns if c != TARGET]
-
-    # Include a scaled copy of past demand as an input signal
-    # (keep TARGET unscaled for labels)
     df["nat_demand_feat"] = df[TARGET].astype(float)
     feature_cols = base_feature_cols + ["nat_demand_feat"]
 
-    # Train/Val/Test split indices (80/10/10), time-ordered
+    # ---- Split train/val/test
     N = len(df)
     i_train = int(0.8 * N)
     i_val = int(0.9 * N)
@@ -134,7 +143,6 @@ def main(args):
     df_val = df.iloc[i_train:i_val].copy()
     df_test = df.iloc[i_val:].copy()
 
-    # ---- Scale features (fit on train only)
     scaler = StandardScaler().fit(df_train[feature_cols])
     X_train_frame = pd.DataFrame(scaler.transform(df_train[feature_cols]),
                                  index=df_train.index, columns=feature_cols)
@@ -143,7 +151,6 @@ def main(args):
     X_test_frame = pd.DataFrame(scaler.transform(df_test[feature_cols]),
                                 index=df_test.index, columns=feature_cols)
 
-    # Targets (unscaled)
     y_train_series = df_train[TARGET].astype(float)
     y_val_series = df_val[TARGET].astype(float)
     y_test_series = df_test[TARGET].astype(float)
@@ -165,8 +172,7 @@ def main(args):
                         lr=args.lr, l2=args.l2)
 
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=args.patience,
-                                         restore_best_weights=True),
+        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=args.patience, restore_best_weights=True),
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5,
                                              patience=max(1, args.patience // 2), verbose=1)
     ]
@@ -180,38 +186,32 @@ def main(args):
         callbacks=callbacks
     )
 
-    # ---- Evaluation helpers
+    # ---- Evaluation
     def evaluate(X, y):
         preds = model.predict(X, verbose=0)
-        # For horizon==1, both y and preds are shaped (N,1); flatten safely
         if preds.ndim == 2 and preds.shape[1] == 1:
             preds = preds.ravel()
             y = y.ravel()
-        return {
-            "MAE": float(mean_absolute_error(y, preds)),
-            "RMSE": rmse(y, preds),
-            "MAPE": mape(y, preds)
-        }
+        return {"MAE": float(mean_absolute_error(y, preds)),
+                "RMSE": rmse(y, preds),
+                "MAPE": mape(y, preds)}
 
     metrics_val = evaluate(Xva, yva)
     metrics_test = evaluate(Xte, yte)
 
-    # ---- Save metrics
     metrics_df = pd.DataFrame([
         {"Model": args.model.upper(), "Horizon": H, "Split": "val", **metrics_val},
         {"Model": args.model.upper(), "Horizon": H, "Split": "test", **metrics_test},
     ])
     metrics_df.to_csv(outdir / "phase3_metrics.csv", index=False)
 
-    # ---- Save model, scaler, and config
+    # ---- Save model & config
     model.save(outdir / f"{args.model}_h{H}.keras")
     joblib.dump(scaler, outdir / "scaler.joblib")
 
-    config = dict(
-        model=args.model, horizon=H, lookback=T, width=args.width, depth=args.depth,
-        dropout=args.dropout, lr=args.lr, l2=args.l2, batch=args.batch,
-        epochs=args.epochs, patience=args.patience, features=feature_cols
-    )
+    config = dict(model=args.model, horizon=H, lookback=T, width=args.width, depth=args.depth,
+                  dropout=args.dropout, lr=args.lr, l2=args.l2, batch=args.batch,
+                  epochs=args.epochs, patience=args.patience, features=feature_cols)
     (outdir / "config.json").write_text(json.dumps(config, indent=2))
 
     print("=== Phase 3 complete ===")
@@ -220,7 +220,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", required=True, help="Path to all_datasets_compressed.npz.zip")
+    parser.add_argument("--data", required=True, help="Path to .csv, .npz, or .npz.zip dataset")
     parser.add_argument("--outdir", default="outputs/seq", help="Directory to save models & metrics")
     parser.add_argument("--model", choices=["lstm", "gru"], default="lstm")
     parser.add_argument("--horizon", type=int, default=1, help="Prediction horizon in hours (1 or 24 typical)")
@@ -240,3 +240,4 @@ if __name__ == "__main__":
     parser.set_defaults(add_calendar=True)
     args = parser.parse_args()
     main(args)
+
