@@ -3,11 +3,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tensorflow import keras
 from tensorflow.keras import layers
+import shap
 
 # ---------- CONFIG ----------
 NPZ_PATH = 'all_datasets_compressed.npz'
 TARGET_HORIZON = 1  # choose 1 or 24 depending on arrays
-EPOCHS = 3           # small for testing
+EPOCHS = 1          # small for testing
 BATCH = 64
 
 OUTDIR = 'phase3_outputs'
@@ -78,13 +79,100 @@ def train_and_eval(model, name):
     model.save(os.path.join(OUTDIR, f'{name}_model.keras'))
     return yv_pred, yt_pred
 
-# Build models
+# ---------- BUILD & TRAIN MODELS ----------
 tcn = build_tcn(N_FEATURES, LOOKBACK)
 transformer = build_transformer(N_FEATURES, LOOKBACK)
 
-# Train & evaluate
 yv_pred_tcn, yt_pred_tcn = train_and_eval(tcn, 'TCN')
 yv_pred_trf, yt_pred_trf = train_and_eval(transformer, 'Transformer')
+
+import numpy as np
+import shap
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tensorflow as tf
+
+# -------------------------
+# Config
+# -------------------------
+LOOKBACK = Xtr.shape[1]        # timesteps
+N_FEATURES = Xtr.shape[2]      # features
+SAMPLE_SIZE = 2               # number of test samples to explain
+BACKGROUND_SIZE = 50            # number of background samples
+
+# -------------------------
+# Prepare background and sample
+# -------------------------
+X_sample = Xt[:SAMPLE_SIZE]    # (samples, timesteps, features)
+X_sample_2d = X_sample.reshape(SAMPLE_SIZE, -1)
+
+background_idx = np.random.choice(Xtr.shape[0], BACKGROUND_SIZE, replace=False)
+background_2d = Xtr[background_idx].reshape(BACKGROUND_SIZE, -1)
+
+# -------------------------
+# Define prediction function for KernelExplainer
+# -------------------------
+def model_predict(x_flat):
+    """
+    x_flat: (samples, timesteps*features)
+    Returns: (samples, output_dim)
+    """
+    x_reshaped = x_flat.reshape(x_flat.shape[0], LOOKBACK, N_FEATURES)
+    y_pred = tcn.predict(x_reshaped)
+    
+    # If multi-output, KernelExplainer returns list per output
+    if isinstance(y_pred, list):
+        return [yp for yp in y_pred]
+    else:
+        return y_pred
+
+# -------------------------
+# Initialize KernelExplainer
+# -------------------------
+explainer = shap.KernelExplainer(model_predict, background_2d)
+shap_values = explainer.shap_values(X_sample_2d)
+
+# Handle single vs multi-output
+if isinstance(shap_values, list):
+    shap_values = shap_values[0]
+
+# -------------------------
+# Reshape SHAP values back to (samples, timesteps, features)
+# -------------------------
+shap_values_3d = np.array(shap_values).reshape(SAMPLE_SIZE, LOOKBACK, N_FEATURES)
+
+# -------------------------
+# Aggregate over timesteps
+# -------------------------
+mean_shap_per_sample = np.mean(np.abs(shap_values_3d), axis=1)  # (samples, features)
+feature_importance = np.mean(mean_shap_per_sample, axis=0)       # (features,)
+
+# -------------------------
+# Bar plot: feature importance
+# -------------------------
+plt.figure(figsize=(10,5))
+plt.bar(range(len(feature_importance)), feature_importance)
+plt.xlabel('Feature Index')
+plt.ylabel('Mean |SHAP value|')
+plt.title('TCN Feature Importance (aggregated over timesteps and samples)')
+plt.show()
+
+# -------------------------
+# Heatmap: SHAP values per sample × feature
+# -------------------------
+plt.figure(figsize=(12,6))
+sns.heatmap(mean_shap_per_sample, cmap='coolwarm', annot=False)
+plt.xlabel('Feature Index')
+plt.ylabel('Sample Index')
+plt.title('TCN SHAP Heatmap (samples × features, averaged over timesteps)')
+plt.show()
+
+
+
+
+
+
+
 
 # ---------- PLOT SAMPLE ----------
 plt.figure(figsize=(12,4))
